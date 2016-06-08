@@ -1,0 +1,2 @@
+# shlibify
+Go packaging scripts
