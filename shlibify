@@ -1,0 +1,100 @@
+#!/usr/bin/perl
+
+package main;
+
+use strict;
+use warnings;
+
+use Cwd qw(:DEFAULT abs_path);
+use Dpkg::Control;
+use Dpkg::Control::Info;
+use Dpkg::Deps;
+
+sub append_dep  {
+    my $s = shift;
+    my $d = shift;
+    if ($s =~ /.*(,\n +).*/) {
+        $s .= $1;
+    } else {
+        $s .= ", ";
+    }
+    $s .= $d;
+}
+
+sub main() {
+    my $control = Dpkg::Control::Info->new();
+    my $already_shlib_enabled = 0;
+    if (!@ARGV) {
+        die "must pass some arches";
+    }
+    my $any = 0;
+    if (@ARGV == 1 && $ARGV[0] eq "any") {
+        $any = 1;
+    }
+    foreach my $pkg (@{$control->{packages}}) {
+        if ($pkg->{Package} =~ /(golang-.*)-dev/) {
+            my $base = "lib" . $1;
+            if ($base =~ /[0-9]$/) {
+                $base .= "-";
+            }
+            if ($pkg->{Depends} =~ s/$base([0-9])+\s+\(=\s+\$\{binary:Version\}\)\s+\[[^]]+\]/$base$1 (= \${binary:Version}) [@ARGV]/) {
+                $already_shlib_enabled = 1;
+                last;
+            }
+            $base .= "1";
+            my $libpkg = Dpkg::Control->new((type => CTRL_INDEX_PKG));
+            $libpkg->{Package} = $base;
+            $libpkg->{Architecture} = "@ARGV";
+            $libpkg->{Depends} = '${misc:Depends}, ${shlibs:Depends}';
+            $libpkg->{Provides} = '${golang:Provides}';
+            $libpkg->{Description} = $pkg->{Description};
+            push @{$control->{packages}}, $libpkg;
+
+            $pkg->{Architecture} = "any";
+            my $dep;
+            if ($any) {
+                $dep = " (= \${binary:Version})";
+            } else {
+                $dep = " (= \${binary:Version}) [@ARGV]";
+            }
+            $pkg->{Depends} = append_dep($pkg->{Depends}, "$base$dep");
+
+            open(my $fh2, ">", "debian/$base.lintian-overrides");
+            printf $fh2 "%s: no-symbols-control-file\n", $base;
+            printf $fh2 "%s: dev-pkg-without-shlib-symlink\n", $base;
+            close($fh2);
+            last;
+        }
+    }
+    my $src = $control->get_source();
+    if ($already_shlib_enabled) {
+        foreach my $pkg (@{$control->{packages}}) {
+            if ($pkg->{Package} =~ /^lib(golang.*?)-?([0-9]+)$/) {
+                $pkg->{Architecture} = "@ARGV";
+            }
+            if ($any) {
+                $src->{"Build-Depends"} =~ s/golang-go-shared-dev\s+\[[^]]+\]/golang-any-shared-dev/;
+            } else {
+                $src->{"Build-Depends"} =~ s/golang-go-shared-dev\s+\[[^]]+\]/golang-go-shared-dev [@ARGV]/;
+            }
+        }
+    } else {
+        if ($any) {
+            $src->{"Build-Depends"} = append_dep($src->{"Build-Depends"}, "golang-any-shared-dev");
+        } else {
+            $src->{"Build-Depends"} = append_dep($src->{"Build-Depends"}, "golang-go-shared-dev [@ARGV]");
+        }
+    }
+    my $fh;
+    open($fh, ">", "debian/control");
+    printf $fh "%s", $control;
+    close($fh);
+    if (!$already_shlib_enabled) {
+        system("dch", "-i", "-D", "yakkety", "Build shared lib package.");
+    } else {
+        system("dch", "-i", "-D", "yakkety", "Update shared lib architectures.");
+    }
+    system("update-maintainer");
+}
+
+main();
