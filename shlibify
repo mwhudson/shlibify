@@ -12,8 +12,8 @@ use warnings;
 # 2) Converting the -dev package to be an 'any' vs 'all' package.
 # 3) Making the -dev packge depend on the lib package.
 # 4) Adding golang-any-shared-dev as a build dependency.
-# 5) (TBD) Adding an or updating the .install file for the -dev
-#    package to include /usr/lib/*/gocode.
+# 5) Adding an or updating the .install file for the -dev package to include
+#    /usr/lib/*/gocode.
 # 6) Call dch with appropriate arguments.
 # 7) Call update-maintainer.
 
@@ -61,7 +61,16 @@ sub main() {
             printf $fh2 "%s: dev-pkg-without-shlib-symlink\n", $libpkgname;
             close($fh2);
 
-            # TBD: add/update debian/$pkg.install
+            if (-f "debian/$pkg.install") {
+                open(my $inst, ">>", "debian/$pkg.install");
+                printf $inst, "/usr/lib/*/gocode\n";
+                close(my $inst);
+            } else {
+                open(my $inst, ">", "debian/$pkg.install");
+                printf $inst, "/usr/share/gocode\n";
+                printf $inst, "/usr/lib/*/gocode\n";
+                close(my $inst);
+            }
 
             last;
         }
