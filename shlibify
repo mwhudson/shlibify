@@ -5,6 +5,18 @@ package main;
 use strict;
 use warnings;
 
+# Convert a Go package to build shared libraries.
+#
+# This involves:
+# 1) Adding a new binary package libgolang-${foo}1.
+# 2) Converting the -dev package to be an 'any' vs 'all' package.
+# 3) Making the -dev packge depend on the lib package.
+# 4) Adding golang-any-shared-dev as a build dependency.
+# 5) (TBD) Adding an or updating the .install file for the -dev
+#    package to include /usr/lib/*/gocode.
+# 6) Call dch with appropriate arguments.
+# 7) Call update-maintainer.
+
 use Cwd qw(:DEFAULT abs_path);
 use Dpkg::Control;
 use Dpkg::Control::Info;
@@ -23,77 +35,44 @@ sub append_dep  {
 
 sub main() {
     my $control = Dpkg::Control::Info->new();
-    my $already_shlib_enabled = 0;
-    if (!@ARGV) {
-        die "must pass some arches";
-    }
-    my $any = 0;
-    if (@ARGV == 1 && $ARGV[0] eq "any") {
-        $any = 1;
-    }
     foreach my $pkg (@{$control->{packages}}) {
+        # We process the first thing that looks like a -dev package (sometimes there
+        # is more than one, but we assume later ones are transitional packages to
+        # cover package renames).
         if ($pkg->{Package} =~ /(golang-.*)-dev/) {
-            my $base = "lib" . $1;
-            if ($base =~ /[0-9]$/) {
-                $base .= "-";
+            my $libpkgname = "lib" . $1;
+            if ($libpkgname =~ /[0-9]$/) {
+                $libpkgname .= "-";
             }
-            if ($pkg->{Depends} =~ s/$base([0-9])+\s+\(=\s+\$\{binary:Version\}\)\s+\[[^]]+\]/$base$1 (= \${binary:Version}) [@ARGV]/) {
-                $already_shlib_enabled = 1;
-                last;
-            }
-            $base .= "1";
+            $libpkg .= "1";
             my $libpkg = Dpkg::Control->new((type => CTRL_INDEX_PKG));
-            $libpkg->{Package} = $base;
-            $libpkg->{Architecture} = "@ARGV";
+            $libpkg->{Package} = $libpkgname;
+            $libpkg->{Architecture} = "any";
             $libpkg->{Depends} = '${misc:Depends}, ${shlibs:Depends}';
             $libpkg->{Provides} = '${golang:Provides}';
             $libpkg->{Description} = $pkg->{Description};
             push @{$control->{packages}}, $libpkg;
 
             $pkg->{Architecture} = "any";
-            my $dep;
-            if ($any) {
-                $dep = " (= \${binary:Version})";
-            } else {
-                $dep = " (= \${binary:Version}) [@ARGV]";
-            }
-            $pkg->{Depends} = append_dep($pkg->{Depends}, "$base$dep");
+            $pkg->{Depends} = append_dep($pkg->{Depends}, "$libpkgname (= \${binary:Version})");
 
-            open(my $fh2, ">", "debian/$base.lintian-overrides");
-            printf $fh2 "%s: no-symbols-control-file\n", $base;
-            printf $fh2 "%s: dev-pkg-without-shlib-symlink\n", $base;
+            open(my $fh2, ">", "debian/$libpkgname.lintian-overrides");
+            printf $fh2 "%s: no-symbols-control-file\n", $libpkgname;
+            printf $fh2 "%s: dev-pkg-without-shlib-symlink\n", $libpkgname;
             close($fh2);
+
+            # TBD: add/update debian/$pkg.install
+
             last;
         }
     }
     my $src = $control->get_source();
-    if ($already_shlib_enabled) {
-        foreach my $pkg (@{$control->{packages}}) {
-            if ($pkg->{Package} =~ /^lib(golang.*?)-?([0-9]+)$/) {
-                $pkg->{Architecture} = "@ARGV";
-            }
-            if ($any) {
-                $src->{"Build-Depends"} =~ s/golang-go-shared-dev\s+\[[^]]+\]/golang-any-shared-dev/;
-            } else {
-                $src->{"Build-Depends"} =~ s/golang-go-shared-dev\s+\[[^]]+\]/golang-go-shared-dev [@ARGV]/;
-            }
-        }
-    } else {
-        if ($any) {
-            $src->{"Build-Depends"} = append_dep($src->{"Build-Depends"}, "golang-any-shared-dev");
-        } else {
-            $src->{"Build-Depends"} = append_dep($src->{"Build-Depends"}, "golang-go-shared-dev [@ARGV]");
-        }
-    }
+    $src->{"Build-Depends"} = append_dep($src->{"Build-Depends"}, "golang-any-shared-dev");
     my $fh;
     open($fh, ">", "debian/control");
     printf $fh "%s", $control;
     close($fh);
-    if (!$already_shlib_enabled) {
-        system("dch", "-i", "-D", "yakkety", "Build shared lib package.");
-    } else {
-        system("dch", "-i", "-D", "yakkety", "Update shared lib architectures.");
-    }
+    system("dch", "-i", "-D", "yakkety", "Build shared lib package.");
     system("update-maintainer");
 }
 
